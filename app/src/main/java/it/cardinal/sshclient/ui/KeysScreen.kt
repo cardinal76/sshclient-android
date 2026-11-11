@@ -31,6 +31,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -42,6 +43,9 @@ import androidx.compose.ui.unit.dp
 import it.cardinal.sshclient.MainViewModel
 import it.cardinal.sshclient.data.StoredKey
 import it.cardinal.sshclient.ssh.PassphraseRequiredException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 private sealed interface KeyDialog {
     data object Generate : KeyDialog
@@ -59,6 +63,7 @@ fun KeysScreen(model: MainViewModel) {
     val keys by model.keys.keys.collectAsState()
     val hosts by model.hosts.hosts.collectAsState()
     var dialog by remember { mutableStateOf<KeyDialog?>(null) }
+    val scope = rememberCoroutineScope()
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
@@ -157,6 +162,7 @@ fun KeysScreen(model: MainViewModel) {
             var passphrase by remember(current) { mutableStateOf("") }
             var askPassphrase by remember(current) { mutableStateOf(false) }
             var error by remember(current) { mutableStateOf<String?>(null) }
+            var busy by remember(current) { mutableStateOf(false) }
             AlertDialog(
                 onDismissRequest = { dialog = null },
                 title = { Text(if (importing == null) "Nuova chiave Ed25519" else "Importa chiave") },
@@ -174,26 +180,34 @@ fun KeysScreen(model: MainViewModel) {
                 },
                 confirmButton = {
                     TextButton(
-                        enabled = name.isNotBlank(),
+                        enabled = name.isNotBlank() && !busy,
                         onClick = {
-                            try {
-                                if (importing == null) {
-                                    model.keys.generate(name.trim())
-                                } else {
-                                    model.keys.import(
-                                        name.trim(), importing.text,
-                                        passphrase.takeIf { askPassphrase }?.toCharArray(),
-                                    )
+                            busy = true
+                            // Generare e cifrare costa: fuori dal thread dell'interfaccia.
+                            scope.launch {
+                                try {
+                                    withContext(Dispatchers.IO) {
+                                        if (importing == null) {
+                                            model.keys.generate(name.trim())
+                                        } else {
+                                            model.keys.import(
+                                                name.trim(), importing.text,
+                                                passphrase.takeIf { askPassphrase }?.toCharArray(),
+                                            )
+                                        }
+                                    }
+                                    dialog = null
+                                } catch (e: PassphraseRequiredException) {
+                                    askPassphrase = true
+                                    error = null
+                                } catch (e: Exception) {
+                                    error = e.message
+                                } finally {
+                                    busy = false
                                 }
-                                dialog = null
-                            } catch (e: PassphraseRequiredException) {
-                                askPassphrase = true
-                                error = null
-                            } catch (e: Exception) {
-                                error = e.message
                             }
                         },
-                    ) { Text(if (importing == null) "Genera" else "Importa") }
+                    ) { Text(if (busy) "Attendi..." else if (importing == null) "Genera" else "Importa") }
                 },
                 dismissButton = { TextButton(onClick = { dialog = null }) { Text("Annulla") } },
             )

@@ -65,50 +65,65 @@ class SshConnection private constructor(
             connectTimeoutMs: Int = 15_000,
         ): SshConnection {
             SshKeys.installBouncyCastle()
-            val config = DefaultConfig().apply { keepAliveProvider = KeepAliveProvider.KEEP_ALIVE }
-            val client = SSHClient(config)
-            var refusal: Exception? = null
-            client.addHostKeyVerifier(object : HostKeyVerifier {
-                override fun verify(hostname: String, p: Int, serverKey: PublicKey): Boolean =
-                    when (knownHosts.check(host, port, serverKey)) {
-                        KnownHosts.Status.KNOWN -> true
-                        KnownHosts.Status.CHANGED -> {
-                            refusal = HostKeyChangedException(SshKeys.fingerprint(serverKey))
-                            false
+            // sshj da' 30 secondi allo scambio delle chiavi, troppo pochi per
+            // chi confronta un'impronta a occhio. Con un server mai visto si
+            // chiude quindi la connessione, si chiede con calma e ci si
+            // ricollega: al secondo giro la chiave deve essere quella accettata.
+            var asked = false
+            while (true) {
+                var unknown: PublicKey? = null
+                var refusal: Exception? = null
+                val config = DefaultConfig().apply { keepAliveProvider = KeepAliveProvider.KEEP_ALIVE }
+                val client = SSHClient(config)
+                client.addHostKeyVerifier(object : HostKeyVerifier {
+                    override fun verify(hostname: String, p: Int, serverKey: PublicKey): Boolean =
+                        when (knownHosts.check(host, port, serverKey)) {
+                            KnownHosts.Status.KNOWN -> true
+                            KnownHosts.Status.CHANGED -> {
+                                refusal = HostKeyChangedException(SshKeys.fingerprint(serverKey))
+                                false
+                            }
+                            KnownHosts.Status.UNKNOWN -> {
+                                unknown = serverKey
+                                false
+                            }
                         }
-                        KnownHosts.Status.UNKNOWN -> {
-                            val ok = prompt.acceptNewHost(
-                                host, port, SshKeys.typeName(serverKey), SshKeys.fingerprint(serverKey),
-                            )
-                            if (ok) knownHosts.add(host, port, serverKey) else refusal = HostKeyRejectedException()
-                            ok
-                        }
-                    }
 
-                // Chiede al server lo stesso tipo di chiave gia' salvato, cosi'
-                // un server con piu' chiavi non sembra «cambiato».
-                override fun findExistingAlgorithms(hostname: String, p: Int): List<String> =
-                    listOfNotNull(knownHosts.keyType(host, port))
-            })
-            client.connectTimeout = connectTimeoutMs
-            try {
+                    // Chiede al server lo stesso tipo di chiave gia' salvato, cosi'
+                    // un server con piu' chiavi non sembra «cambiato».
+                    override fun findExistingAlgorithms(hostname: String, p: Int): List<String> =
+                        listOfNotNull(knownHosts.keyType(host, port))
+                })
+                client.connectTimeout = connectTimeoutMs
                 try {
-                    client.connect(host, port)
+                    try {
+                        client.connect(host, port)
+                    } catch (e: Exception) {
+                        val serverKey = unknown ?: throw (refusal ?: e)
+                        if (asked) throw e
+                        asked = true
+                        val accepted = prompt.acceptNewHost(
+                            host, port, SshKeys.typeName(serverKey), SshKeys.fingerprint(serverKey),
+                        )
+                        if (!accepted) throw HostKeyRejectedException()
+                        knownHosts.add(host, port, serverKey)
+                        continue
+                    }
+                    client.connection.keepAlive.keepAliveInterval = 30
+                    try {
+                        client.authPublickey(user, KeyPairWrapper(key))
+                    } catch (e: UserAuthException) {
+                        throw AuthenticationFailedException(e)
+                    }
+                    val session = client.startSession()
+                    session.allocatePTY("xterm-256color", columns, rows, 0, 0, emptyMap())
+                    return SshConnection(client, session, session.startShell())
                 } catch (e: Exception) {
-                    throw refusal ?: e
+                    runCatching { client.disconnect() }
+                    throw e
+                } finally {
+                    if (unknown != null) runCatching { client.disconnect() }
                 }
-                client.connection.keepAlive.keepAliveInterval = 30
-                try {
-                    client.authPublickey(user, KeyPairWrapper(key))
-                } catch (e: UserAuthException) {
-                    throw AuthenticationFailedException(e)
-                }
-                val session = client.startSession()
-                session.allocatePTY("xterm-256color", columns, rows, 0, 0, emptyMap())
-                return SshConnection(client, session, session.startShell())
-            } catch (e: Exception) {
-                runCatching { client.disconnect() }
-                throw e
             }
         }
     }
