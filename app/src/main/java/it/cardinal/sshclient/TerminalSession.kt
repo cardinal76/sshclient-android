@@ -43,6 +43,7 @@ class TerminalSession(
     val host: HostProfile,
     private val loadKey: () -> KeyPair,
     private val knownHosts: KnownHosts,
+    private val onEnded: () -> Unit = {},
 ) {
     var state: SessionState by mutableStateOf(SessionState.Connecting)
         private set
@@ -56,6 +57,12 @@ class TerminalSession(
 
     @Volatile
     private var closed = false
+
+    @Volatile
+    private var disconnecting = false
+
+    /** Falso da quando la connessione e' finita, per qualunque motivo. */
+    val isActive: Boolean get() = !closed && state !is SessionState.Closed
 
     val emulator: TerminalEmulator = TerminalEmulatorFactory.create(
         onKeyboardInput = { bytes -> send { it.write(bytes) } },
@@ -104,13 +111,27 @@ class TerminalSession(
                 emulator.writeInput(buffer, 0, read)
             }
         } catch (e: Exception) {
-            if (!closed) error = e.message ?: e.javaClass.simpleName
+            if (!closed && !disconnecting) error = e.message ?: e.javaClass.simpleName
         } finally {
             connection?.close()
             if (!closed) state = SessionState.Closed(error)
+            onEnded()
         }
     }
 
+    /**
+     * Chiude la connessione ma lascia il terminale sullo schermo, con quello
+     * che c'era scritto: e' il «Disconnetti» della notifica.
+     */
+    fun disconnect() {
+        if (closed || !isActive) return
+        disconnecting = true
+        (state as? SessionState.ConfirmHost)?.answer?.invoke(false)
+        val conn = connection
+        thread(isDaemon = true) { conn?.close() }
+    }
+
+    /** Chiude tutto, terminale compreso: si chiama uscendo dalla schermata. */
     fun close() {
         if (closed) return
         closed = true

@@ -21,7 +21,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val hosts = app.hosts
     val knownHosts = app.knownHosts
 
-    var screen: Screen by mutableStateOf(Screen.Hosts)
+    // Se l'activity rinasce con una connessione ancora aperta, si riparte dal terminale.
+    var screen: Screen by mutableStateOf(app.session?.let { Screen.Terminal(it) } ?: Screen.Hosts)
         private set
 
     fun open(target: Screen) {
@@ -29,17 +30,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun connect(host: HostProfile) {
-        val keyId = host.keyId ?: return
-        screen = Screen.Terminal(TerminalSession(host, { keys.load(keyId) }, knownHosts))
+        screen = Screen.Terminal(app.openSession(host) ?: return)
     }
 
     /** Torna alla lista dei server, chiudendo la connessione se ce n'e' una. */
     fun back() {
-        (screen as? Screen.Terminal)?.session?.close()
+        if (screen is Screen.Terminal) app.closeSession()
         screen = Screen.Hosts
-    }
-
-    override fun onCleared() {
-        (screen as? Screen.Terminal)?.session?.close()
     }
 }
