@@ -65,6 +65,39 @@ Servono JDK 17 o superiore e l'SDK di Android (piattaforma 37.2).
 L'APK esce in `app/build/outputs/apk/debug/app-debug.apk`. I test accendono
 un server SSH vero (Apache MINA) dentro la JVM e ci si collegano.
 
+## Firma
+
+Android aggiorna un'app solo con un APK firmato dalla stessa chiave;
+altrimenti la fa disinstallare, e disinstallare cancella le chiavi SSH. La
+firma di debug predefinita e' diversa su ogni macchina, quindi l'APK di
+GitHub Actions non aggiornerebbe quello compilato altrove. Per questo `debug`
+e `release` si firmano con una chiave fissa, che sta in un keystore fuori dal
+repository e arriva alla build da tre variabili d'ambiente:
+
+| Variabile | Cosa contiene |
+| --- | --- |
+| `FIRMA_KEYSTORE` | percorso del keystore (PKCS12) |
+| `FIRMA_PASSWORD` | la sua password |
+| `FIRMA_ALIAS` | alias della chiave (`sshclient`) |
+
+Su GitHub Actions servono due secret del repository (Settings -> Secrets and
+variables -> Actions):
+
+- `FIRMA_KEYSTORE_BASE64`: il keystore in base64 su una riga
+  (`base64 -w0 sshclient-firma.p12`);
+- `FIRMA_PASSWORD`: la password del keystore.
+
+L'alias e' scritto nel workflow.
+
+Senza keystore si compila lo stesso: Gradle avvisa e firma con la chiave di
+debug della macchina (e' il caso di chi clona il repository e delle pull
+request da un fork, che i secret non li vedono). Quell'APK pero' non aggiorna
+un'app firmata con la chiave fissa: va installato su un telefono che non ce
+l'ha, o dopo averla disinstallata.
+
+Keystore e password non vanno mai nel repository. Chi perde il keystore non
+puo' piu' pubblicare aggiornamenti: resta solo disinstallare.
+
 ## Cosa manca
 
 - Una sessione alla volta.

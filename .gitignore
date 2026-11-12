@@ -6,3 +6,6 @@ local.properties
 .kotlin/
 *.jks
 *.keystore
+*.p12
+*.pfx
+*-LEGGIMI.txt
