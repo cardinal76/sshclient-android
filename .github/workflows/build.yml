@@ -15,7 +15,27 @@ jobs:
           distribution: temurin
           java-version: 21
       - uses: gradle/actions/setup-gradle@v4
+      # Firma fissa (vedi «Firma» nel README). I secret non si possono usare
+      # in un `if:`, quindi passano da `env`. Dove non ci sono (un fork, o
+      # prima di averli creati) il passo non scrive niente e la build firma
+      # con la chiave di debug del runner.
+      - name: Keystore della firma fissa
+        env:
+          FIRMA_KEYSTORE_BASE64: ${{ secrets.FIRMA_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$FIRMA_KEYSTORE_BASE64" ]; then
+            echo "::notice::Secret FIRMA_KEYSTORE_BASE64 assente: APK con la firma di debug del runner."
+            exit 0
+          fi
+          # Fuori dal workspace, cosi' non puo' finire in un artefatto.
+          keystore="$RUNNER_TEMP/firma.p12"
+          printf '%s' "$FIRMA_KEYSTORE_BASE64" | base64 --decode > "$keystore"
+          chmod 600 "$keystore"
+          echo "FIRMA_KEYSTORE=$keystore" >> "$GITHUB_ENV"
       - name: Test e APK di debug
+        env:
+          FIRMA_PASSWORD: ${{ secrets.FIRMA_PASSWORD }}
+          FIRMA_ALIAS: sshclient
         run: ./gradlew testDebugUnitTest assembleDebug
       - uses: actions/upload-artifact@v4
         with:
